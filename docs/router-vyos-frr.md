@@ -71,9 +71,10 @@ systemctl stop lg-wrapper
 
 ## Loopback Firewall
 
-The wrapper listens on `127.0.0.1:8080`, and `cloudflared` reaches it over
-loopback. A default-drop input firewall needs an explicit accept rule for `lo`
-before any drop rules. The exact keyword varies by VyOS version, but the shape is:
+The wrapper listens on loopback, and `cloudflared` reaches the local service
+over loopback. A default-drop input firewall needs an explicit accept rule for
+`lo` before any drop rules. The exact keyword varies by VyOS version, but the
+shape is:
 
 ```sh
 set firewall ipv4 input filter rule 5 action accept
@@ -83,6 +84,69 @@ set firewall ipv6 input filter rule 5 inbound-interface name lo
 ```
 
 Commit and save as usual for your VyOS configuration workflow.
+
+## Optional: HAProxy Local Concurrency Gate
+
+Cloudflare rate limiting reduces bursts at the edge, but it does not know local
+origin pressure. If you want a local cap while keeping the wrapper dumb, put
+HAProxy on loopback in front of the wrapper. This caps concurrent origin
+connections/request pressure; it is not a direct subprocess-lifetime controller.
+
+```text
+cloudflared -> 127.0.0.1:8080 (HAProxy) -> 127.0.0.1:8081 (wrapper)
+```
+
+Move the wrapper to `8081`:
+
+```sh
+LG_LISTEN_ADDR=127.0.0.1:8081
+```
+
+Create `/config/haproxy/haproxy.cfg`:
+
+```haproxy
+global
+  log stdout format raw local0
+  maxconn 64
+
+defaults
+  mode http
+  option httplog
+  option dontlognull
+  timeout connect 2s
+  timeout client 75s
+  timeout server 75s
+  timeout queue 1s
+
+frontend looking_glass
+  bind 127.0.0.1:8080
+  stick-table type string size 16 expire 2m store conn_cur
+  acl command_path path /api/bgp /api/ping /api/traceroute
+  http-request track-sc0 str(lg-commands) if command_path
+  http-request deny deny_status 429 content-type text/plain lf-string "too many active looking-glass commands\n" if command_path { sc0_conn_cur gt 4 }
+  default_backend wrapper
+
+backend wrapper
+  server wrapper 127.0.0.1:8081 check maxconn 4
+```
+
+`maxconn 4` is the hard stop to the wrapper origin. The stick-table rule gives
+command paths a clean `429` before HAProxy queues. Adjust both `maxconn 4` and
+`gt 4` together for a different cap.
+
+Run HAProxy as a VyOS-managed container with host networking:
+
+```text
+set container name haproxy image docker.io/haproxy:2.9-alpine
+set container name haproxy allow-host-networks
+set container name haproxy restart always
+set container name haproxy arguments 'haproxy -f /usr/local/etc/haproxy/haproxy.cfg'
+set container name haproxy volume haproxy-config source /config/haproxy
+set container name haproxy volume haproxy-config destination /usr/local/etc/haproxy
+```
+
+Commit and save. Leave `cloudflared` pointed at `http://127.0.0.1:8080`; it now
+reaches HAProxy instead of the wrapper directly.
 
 ## Cloudflared On VyOS
 
@@ -103,7 +167,8 @@ ingress:
 ```
 
 On VyOS, run `cloudflared` as a podman container via `set container` with host
-networking so `127.0.0.1:8080` resolves to the wrapper on the router:
+networking so `127.0.0.1:8080` resolves to the router's loopback service
+(wrapper directly, or HAProxy if you enabled the optional gate):
 
 ```text
 set container name cloudflared allow-host-networks

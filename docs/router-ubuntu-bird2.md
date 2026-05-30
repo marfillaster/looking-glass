@@ -126,8 +126,8 @@ journalctl -u lg-wrapper.service
 
 ## Loopback Firewall
 
-The wrapper listens on `127.0.0.1:8080`, and `cloudflared` reaches it over
-loopback. Ubuntu normally accepts loopback traffic by default. If you run a
+The wrapper listens on loopback, and `cloudflared` reaches the local service
+over loopback. Ubuntu normally accepts loopback traffic by default. If you run a
 default-drop firewall, make sure loopback is accepted before any drop rules.
 
 For UFW:
@@ -143,6 +143,73 @@ iif "lo" accept
 ```
 
 Do not expose the wrapper port on a public or LAN interface.
+
+## Optional: HAProxy Local Concurrency Gate
+
+Cloudflare rate limiting reduces bursts at the edge, but it does not know local
+origin pressure. If you want a local cap while keeping the wrapper dumb, put
+HAProxy on loopback in front of the wrapper. This caps concurrent origin
+connections/request pressure; it is not a direct subprocess-lifetime controller.
+
+```text
+cloudflared -> 127.0.0.1:8080 (HAProxy) -> 127.0.0.1:8081 (wrapper)
+```
+
+Install HAProxy:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y haproxy
+```
+
+Move the wrapper to `8081` in `/etc/looking-glass/wrapper.env`:
+
+```sh
+LG_LISTEN_ADDR=127.0.0.1:8081
+```
+
+Create `/etc/haproxy/haproxy.cfg`:
+
+```haproxy
+global
+  log /dev/log local0
+  maxconn 64
+
+defaults
+  mode http
+  option httplog
+  option dontlognull
+  timeout connect 2s
+  timeout client 75s
+  timeout server 75s
+  timeout queue 1s
+
+frontend looking_glass
+  bind 127.0.0.1:8080
+  stick-table type string size 16 expire 2m store conn_cur
+  acl command_path path /api/bgp /api/ping /api/traceroute
+  http-request track-sc0 str(lg-commands) if command_path
+  http-request deny deny_status 429 content-type text/plain lf-string "too many active looking-glass commands\n" if command_path { sc0_conn_cur gt 4 }
+  default_backend wrapper
+
+backend wrapper
+  server wrapper 127.0.0.1:8081 check maxconn 4
+```
+
+`maxconn 4` is the hard stop to the wrapper origin. The stick-table rule gives
+command paths a clean `429` before HAProxy queues. Adjust both `maxconn 4` and
+`gt 4` together for a different cap.
+
+Restart both services:
+
+```sh
+sudo systemctl restart lg-wrapper.service
+sudo systemctl enable --now haproxy
+sudo systemctl status haproxy
+```
+
+Leave `cloudflared` pointed at `http://127.0.0.1:8080`; it now reaches HAProxy
+instead of the wrapper directly.
 
 ## Cloudflared On Ubuntu
 
