@@ -1,0 +1,7 @@
+# Cloudflare Workers Static Assets header rules.
+# Vite emits content-hashed filenames under /assets/ (the hash changes whenever
+# the contents change — JS, CSS, and the ghostty-vt wasm), so those are safe to
+# cache forever and never revalidate. Everything else (robots.txt, favicon.ico)
+# keeps the default must-revalidate behaviour so updates are picked up at once.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

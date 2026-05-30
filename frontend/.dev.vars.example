@@ -1,0 +1,17 @@
+# Single local config/secret file (copy to .dev.vars — gitignored).
+# Read by BOTH local runtimes: `wrangler dev` natively, and the Node adapter
+# (`npm run start:node`) via process.loadEnvFile. In production secrets are set
+# with `wrangler secret put <NAME>` (Worker) or the host env (Node), never here.
+# Non-secret config (LG_API_BASE_URL, LG_SITE_TITLE, ...) has committed defaults
+# in wrangler.json `vars`; add entries here to override them locally — for the
+# Node adapter set whatever LG_* vars you need in this file.
+
+# Cloudflare Access service token — how the Worker authenticates to the tunneled
+# wrapper API. Create under Zero Trust > Access > Service Auth.
+CF_ACCESS_CLIENT_ID=
+CF_ACCESS_CLIENT_SECRET=
+
+# For local dev you can point at a wrapper running on your machine and skip the
+# Access headers above:
+# LG_API_BASE_URL=http://127.0.0.1:8080
+# LG_ROUTING_BACKEND=frr

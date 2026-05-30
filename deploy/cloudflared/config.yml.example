@@ -1,0 +1,22 @@
+# cloudflared ingress config for the looking-glass wrapper.
+# Copy to config.yml and fill in your own values. Placeholders only here.
+#
+# On VyOS this runs as a podman container via `set container`, with this file
+# and the tunnel credentials on PERSISTENT storage so they survive image
+# upgrades. The tunnel dials OUT (443/QUIC) — no inbound ports are opened.
+
+# Tunnel UUID from `cloudflared tunnel create <name>`.
+tunnel: 00000000-0000-0000-0000-000000000000
+credentials-file: /etc/cloudflared/00000000-0000-0000-0000-000000000000.json
+
+# Optional: keeps the connection healthy through NAT.
+# protocol: quic
+
+ingress:
+  # Public hostname that fronts the wrapper API. This hostname must be locked
+  # down by a Cloudflare Access *service-token* policy so only the Worker can
+  # reach it — the public never hits this directly.
+  - hostname: lg-api.example.com
+    service: http://127.0.0.1:8080
+  # Required catch-all.
+  - service: http_status:404

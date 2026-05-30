@@ -1,0 +1,31 @@
+# Public looking glass — crawling and indexing is welcome.
+# AI/LLM crawlers are explicitly allowed alongside search engines.
+User-agent: *
+Allow: /
+
+# Keep the streaming probe endpoints out of indexes (not content, and they
+# execute live ping/traceroute/BGP queries). The site itself stays crawlable.
+Disallow: /api/
+
+# Named allow-list for common AI crawlers, in case a wildcard is ever read
+# more strictly. These are intentionally permitted.
+User-agent: GPTBot
+Allow: /
+User-agent: OAI-SearchBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: Claude-Web
+Allow: /
+User-agent: anthropic-ai
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+User-agent: Applebot-Extended
+Allow: /
+User-agent: CCBot
+Allow: /

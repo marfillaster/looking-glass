@@ -1,0 +1,194 @@
+# =============================================================================
+# Looking Glass — Worker deploy workflow (TEMPLATE — intentionally NOT wired)
+# =============================================================================
+#
+# This file is a TEMPLATE. It lives under deploy/ — NOT under .github/workflows/
+# — so GitHub never runs it as-is. Deploying from CI is opt-in: you have to copy
+# it into place and add your own secrets/variables. The shipped repo deploys only
+# from a trusted local machine (scripts/deploy.sh); see the README.
+#
+# WHY OPT-IN: deploying needs a Cloudflare API token. Wiring this on a public
+# repo means anyone who can push (or land a malicious PR workflow change) could
+# exfiltrate that token or ship to your Worker. Enable it only once you trust
+# your branch protections / required reviews and have scoped the token tightly.
+#
+# -----------------------------------------------------------------------------
+# To enable:
+#   1. Copy this file to .github/workflows/deploy.yml
+#          cp deploy/github-actions/deploy.yml.template .github/workflows/deploy.yml
+#   2. Add the repository SECRETS (Settings → Secrets and variables → Actions):
+#          CLOUDFLARE_API_TOKEN    scoped token (see permissions below)
+#          CLOUDFLARE_ACCOUNT_ID   your Cloudflare account id
+#      Scope the API token to the minimum:
+#          Account → Workers Scripts → Edit
+#          Account → Account Settings → Read
+#          Zone    → Workers Routes → Edit     (only if using a custom domain)
+#          Zone    → DNS → Edit                (only if using a custom domain)
+#          Zone    → Zone → Read               (only if using a custom domain)
+#   3. Add the repository VARIABLES (same screen, "Variables" tab) — these are
+#      your real, non-secret config. They replace the placeholder values in the
+#      committed wrangler.json (which stays RFC-documentation placeholders so the
+#      public repo ships zero real infrastructure values):
+#          LG_WORKER_NAME        worker name        (default: looking-glass)
+#          LG_ROUTE              public hostname     e.g. lg.example.com  (omit for *.workers.dev)
+#          LG_API_BASE_URL       tunneled wrapper origin, e.g. https://lg-api.example.com
+#          LG_AS_NUMBER          e.g. AS65000
+#          LG_SITE_TITLE         e.g. "Example Looking Glass"
+#          LG_OPERATOR_NAME      e.g. "Example Network"
+#          LG_SITE_URL           public canonical URL, e.g. https://lg.example.com
+#          LG_ADDRESS_FAMILIES   ipv4 | ipv6 | ipv4,ipv6
+#          LG_ENABLED_QUERIES    e.g. prefix,as-path,community
+#          LG_ROUTING_BACKEND    frr | bird  (must match wrapper LG_ROUTING_BACKEND)
+#          LG_SITE_DESCRIPTION   (optional)
+#          LG_REPO_URL           (optional)
+#          LG_BLOG_URL           (optional)
+#          LG_VANTAGE_POINTS     (optional) JSON map, e.g. {"US West":"https://lg-uswest.example.com"}
+#   4. Set the Worker SECRETS once (they persist on the Worker across deploys, so
+#      this workflow does not push them). From a machine with the token:
+#          cd frontend
+#          npx wrangler secret put CF_ACCESS_CLIENT_ID
+#          npx wrangler secret put CF_ACCESS_CLIENT_SECRET
+#      (Or uncomment the "Push Access service-token secrets" step below and add
+#       CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET as repo Secrets.)
+#   5. Trigger it: the Actions tab → "Deploy Worker" → Run workflow. Flip on the
+#      `push:` trigger below only after you're happy with a manual run.
+# -----------------------------------------------------------------------------
+
+name: Deploy Worker
+
+on:
+  workflow_dispatch: {}
+  # Uncomment to deploy automatically on every push to main once you trust the
+  # secrets/branch protections:
+  # push:
+  #   branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Optional: gate on a protected GitHub Environment for required reviewers.
+    # environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache Ghostty build workspace
+        uses: actions/cache@v4
+        with:
+          path: .lg-build
+          key: ghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ghostty-vt.env', 'scripts/build-ghostty-vt-ubuntu.sh') }}
+          restore-keys: |
+            ghostty-vt-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build Ghostty WASM
+        run: ./scripts/build-ghostty-vt-ubuntu.sh
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Generate prod wrangler config from repo Variables
+        working-directory: frontend
+        env:
+          LG_WORKER_NAME: ${{ vars.LG_WORKER_NAME }}
+          LG_ROUTE: ${{ vars.LG_ROUTE }}
+          LG_API_BASE_URL: ${{ vars.LG_API_BASE_URL }}
+          LG_VANTAGE_POINTS: ${{ vars.LG_VANTAGE_POINTS }}
+          LG_SITE_TITLE: ${{ vars.LG_SITE_TITLE }}
+          LG_SITE_DESCRIPTION: ${{ vars.LG_SITE_DESCRIPTION }}
+          LG_AS_NUMBER: ${{ vars.LG_AS_NUMBER }}
+          LG_OPERATOR_NAME: ${{ vars.LG_OPERATOR_NAME }}
+          LG_REPO_URL: ${{ vars.LG_REPO_URL }}
+          LG_BLOG_URL: ${{ vars.LG_BLOG_URL }}
+          LG_SITE_URL: ${{ vars.LG_SITE_URL }}
+          LG_ENABLED_QUERIES: ${{ vars.LG_ENABLED_QUERIES }}
+          LG_ROUTING_BACKEND: ${{ vars.LG_ROUTING_BACKEND }}
+          LG_ADDRESS_FAMILIES: ${{ vars.LG_ADDRESS_FAMILIES }}
+        run: |
+          set -euo pipefail
+          # Only include vars that are actually set, so unset optionals fall back
+          # to the app's built-in defaults rather than becoming empty strings.
+          vars_json="$(jq -n \
+            --arg LG_API_BASE_URL     "${LG_API_BASE_URL:-}" \
+            --arg LG_VANTAGE_POINTS   "${LG_VANTAGE_POINTS:-}" \
+            --arg LG_SITE_TITLE       "${LG_SITE_TITLE:-}" \
+            --arg LG_SITE_DESCRIPTION "${LG_SITE_DESCRIPTION:-}" \
+            --arg LG_AS_NUMBER        "${LG_AS_NUMBER:-}" \
+            --arg LG_OPERATOR_NAME    "${LG_OPERATOR_NAME:-}" \
+            --arg LG_REPO_URL         "${LG_REPO_URL:-}" \
+            --arg LG_BLOG_URL         "${LG_BLOG_URL:-}" \
+            --arg LG_SITE_URL         "${LG_SITE_URL:-}" \
+            --arg LG_ENABLED_QUERIES  "${LG_ENABLED_QUERIES:-}" \
+            --arg LG_ROUTING_BACKEND  "${LG_ROUTING_BACKEND:-}" \
+            --arg LG_ADDRESS_FAMILIES "${LG_ADDRESS_FAMILIES:-}" \
+            '[ $ARGS.named | to_entries[] | select(.value != "") ] | from_entries')"
+
+          routes_json="[]"
+          if [ -n "${LG_ROUTE:-}" ]; then
+            routes_json="$(jq -n --arg r "$LG_ROUTE" '[{pattern:$r, custom_domain:true}]')"
+          fi
+
+          jq -n \
+            --arg name        "${LG_WORKER_NAME:-looking-glass}" \
+            --argjson vars    "$vars_json" \
+            --argjson routes  "$routes_json" \
+            '{
+               "$schema": "./node_modules/wrangler/config-schema.json",
+               name: $name,
+               main: "./workers/app.ts",
+               compatibility_date: "2025-10-08",
+               compatibility_flags: ["nodejs_compat"],
+               observability: { enabled: true },
+               upload_source_maps: true,
+               vars: $vars
+             }
+             + (if ($routes | length) > 0 then { routes: $routes } else {} end)' \
+            > wrangler.prod.jsonc
+
+          echo "Generated frontend/wrangler.prod.jsonc:"
+          cat wrangler.prod.jsonc
+
+      - name: Build
+        working-directory: frontend
+        env:
+          # Bakes the real vars/routes into the generated build/server/wrangler.json.
+          WRANGLER_CONFIG: wrangler.prod.jsonc
+        run: npm run build
+
+      - name: Deploy
+        working-directory: frontend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # Deploy the GENERATED config (main=index.js, no_bundle), not the source —
+        # the source main is workers/app.ts, which makes wrangler re-bundle and
+        # fail on react-router's "virtual:react-router/server-build" module.
+        run: npx wrangler deploy -c build/server/wrangler.json
+
+      # Optional: push the Cloudflare Access service-token secrets on every deploy
+      # instead of setting them once with `wrangler secret put`. Add
+      # CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET as repo Secrets first.
+      # - name: Push Access service-token secrets
+      #   working-directory: frontend
+      #   env:
+      #     CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      #     CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #     WORKER_NAME: ${{ vars.LG_WORKER_NAME }}
+      #   run: |
+      #     printf '%s' '${{ secrets.CF_ACCESS_CLIENT_ID }}'     | npx wrangler secret put CF_ACCESS_CLIENT_ID     --name "${WORKER_NAME:-looking-glass}"
+      #     printf '%s' '${{ secrets.CF_ACCESS_CLIENT_SECRET }}' | npx wrangler secret put CF_ACCESS_CLIENT_SECRET --name "${WORKER_NAME:-looking-glass}"

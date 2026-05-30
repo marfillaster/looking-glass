@@ -1,0 +1,37 @@
+# OS / editor
+.DS_Store
+*.swp
+
+# Secrets & local env (each component also has its own ignores)
+.env
+*.env
+!.env.example
+!/scripts/ghostty-vt.env
+.dev.vars
+!.dev.vars.example
+
+# Go wrapper build output
+/wrapper/wrapper
+/wrapper/dist/
+
+# Frontend dependencies, generated types, build output, and local runtime state
+/frontend/node_modules/
+/frontend/build/
+/frontend/.react-router/
+/frontend/.wrangler/
+/frontend/*.tsbuildinfo
+/frontend/.dev.vars
+/frontend/.dev.vars.*
+!/frontend/.dev.vars.example
+
+# Local scratch — never commit
+local/
+.local/
+
+# Ghostty wasm build workspace (source clone + zig toolchain + caches).
+# The built artifacts are generated locally/CI and must not be committed.
+.lg-build/
+/frontend/app/lib/ghostty/ghostty-vt.wasm
+
+# Production Worker config — holds real infra/branding values; deploy from local.
+/frontend/wrangler.prod.jsonc

@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "looking-glass",
+  "main": "./workers/app.ts",
+  "compatibility_date": "2025-10-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "LG_API_BASE_URL": "https://lg-api.example.com",
+    "LG_VANTAGE_POINTS": "{\"Fremont, CA\":\"https://lg-uswest.example.com\",\"Amsterdam, NL\":\"https://lg-eu.example.com\"}",
+    "LG_SITE_TITLE": "Looking Glass",
+    "LG_SITE_DESCRIPTION": "BGP route and reachability lookups from the network edge.",
+    "LG_AS_NUMBER": "AS65000",
+    "LG_OPERATOR_NAME": "Example Network",
+    "LG_REPO_URL": "https://github.com/marfillaster/looking-glass",
+    "LG_BLOG_URL": "https://blog.example.com",
+    "LG_SITE_URL": "https://lg.example.com",
+    "LG_ENABLED_QUERIES": "prefix,as-path,community",
+    "LG_ROUTING_BACKEND": "frr",
+    "LG_ADDRESS_FAMILIES": "ipv4,ipv6"
+  }
+}
