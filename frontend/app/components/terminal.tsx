@@ -32,6 +32,17 @@ export interface TerminalOutputProps {
 	health?: "checking" | "ok" | "fail";
 	/** Shows in-place command progress in the title bar. */
 	busy?: boolean;
+	/**
+	 * Ephemeral line appended below the committed output (e.g. the busy-retry
+	 * countdown). Rendered visually, but deliberately NOT announced per-tick to
+	 * assistive tech — use `status` for that. Updates each second.
+	 */
+	transient?: string;
+	/**
+	 * Coarse status string announced politely to assistive tech. Set on
+	 * transitions only (not per second), so screen readers aren't flooded.
+	 */
+	status?: string;
 	/** Called for terminal-style interrupt shortcuts, such as Ctrl+C. */
 	onInterrupt?: () => void;
 	/**
@@ -56,6 +67,8 @@ export function TerminalOutput({
 	text,
 	health = "checking",
 	busy,
+	transient,
+	status,
 	onInterrupt,
 	followSignal,
 	fill,
@@ -71,7 +84,11 @@ export function TerminalOutput({
 	const [scroll, setScroll] = useState<ScrollInfo>(EMPTY_SCROLL);
 	const [copied, setCopied] = useState(false);
 
-	pendingText.current = text;
+	// The canvas/transcript show committed output plus any ephemeral line; the
+	// live-region announcement (latestLine, below) is derived from `text` alone,
+	// so the per-second `transient` countdown never reaches assistive tech.
+	const body = transient ? text + transient : text;
+	pendingText.current = body;
 
 	// Create the terminal + renderer once, client-side.
 	useEffect(() => {
@@ -133,8 +150,8 @@ export function TerminalOutput({
 
 	// Feed content changes to the renderer.
 	useEffect(() => {
-		viewRef.current?.setContent(text);
-	}, [text]);
+		viewRef.current?.setContent(body);
+	}, [body]);
 
 	// A new command re-pins to the bottom and resumes auto-follow. Runs after the
 	// text effect above, so the freshly appended command line is already written.
@@ -314,10 +331,15 @@ export function TerminalOutput({
 					<canvas ref={canvasRef} className="block" aria-hidden="true" />
 				</div>
 				<pre className="sr-only" aria-label="Terminal output transcript">
-					{text}
+					{body}
 				</pre>
 				<div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
 					{busy ? latestLine : ""}
+				</div>
+				{/* Coarse, transition-only status (e.g. busy-retry) for assistive
+				    tech — kept out of the per-second transient to avoid flooding. */}
+				<div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+					{status}
 				</div>
 				{scrollable && <Scrollbar info={scroll} view={viewRef} />}
 			</div>

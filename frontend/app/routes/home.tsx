@@ -36,6 +36,11 @@ const MAX_TERMINAL_LINES = 1000;
 const HEALTH_CHECK_INTERVAL_MS = 60000;
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
 const HEALTH_CHECK_MAX_BACKOFF_MS = 15 * 60000;
+// The router-side HAProxy maxconn gate (and the Cloudflare rate-limit courtesy
+// throttle) answer 503/429 when every query slot is busy. Rather than fail the
+// command, the UI shows a countdown and retries: two retries, 5s then 10s.
+const BUSY_RETRY_DELAYS_MS = [5000, 10000];
+const BUSY_STATUSES = new Set([429, 503]);
 
 type CommandKind = "bgp" | "ping" | "traceroute";
 type BGPQueryType = "prefix" | "as-path" | "community";
@@ -47,6 +52,80 @@ interface QueryDetection {
 	canProbe: boolean;
 	commandQuery: string;
 	family: AddressFamily | null;
+}
+
+// Wait `ms`, ticking `onTick(secondsLeft)` once per second, rejecting with an
+// AbortError if `signal` fires — so Ctrl+C interrupts the retry wait too.
+function waitWithCountdown(
+	ms: number,
+	signal: AbortSignal,
+	onTick: (secondsLeft: number) => void,
+): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const abort = () => new DOMException("Aborted", "AbortError");
+		if (signal.aborted) return reject(abort());
+		let remaining = Math.ceil(ms / 1000);
+		onTick(remaining);
+		const tick = window.setInterval(() => {
+			remaining -= 1;
+			if (remaining <= 0) {
+				cleanup();
+				resolve();
+			} else {
+				onTick(remaining);
+			}
+		}, 1000);
+		const onAbort = () => {
+			cleanup();
+			reject(abort());
+		};
+		const cleanup = () => {
+			window.clearInterval(tick);
+			signal.removeEventListener("abort", onAbort);
+		};
+		signal.addEventListener("abort", onAbort);
+	});
+}
+
+// Parse a wrapper SSE stream (`event: line|fail|done`) from a fetch body and
+// dispatch each event. Resolves when the stream ends (the server closes after
+// `done`); rejects with AbortError if the underlying fetch is aborted. Reading
+// the stream via fetch rather than EventSource is what lets the caller see the
+// HTTP status (e.g. a 503 from the maxconn gate) and drive the busy-retry.
+async function consumeEventStream(
+	body: ReadableStream<Uint8Array>,
+	handlers: { onLine: (data: string) => void; onFail: (data: string) => void },
+): Promise<void> {
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	const dispatch = (block: string) => {
+		let event = "message";
+		const data: string[] = [];
+		for (const line of block.split("\n")) {
+			if (line.startsWith("event:")) event = line.slice(6).trim();
+			else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+		}
+		const payload = data.join("\n");
+		if (event === "line") handlers.onLine(payload);
+		else if (event === "fail") handlers.onFail(payload);
+		// `done` (and anything else) produces no output; the server closes after it.
+	};
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, "\n");
+			let sep: number;
+			while ((sep = buffer.indexOf("\n\n")) !== -1) {
+				const block = buffer.slice(0, sep);
+				buffer = buffer.slice(sep + 2);
+				if (block.trim()) dispatch(block);
+			}
+		}
+	} finally {
+		reader.cancel().catch(() => {});
+	}
 }
 
 export function meta({ data }: Route.MetaArgs) {
@@ -101,6 +180,13 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 	const loginBanner = buildLoginBanner(config);
 	const [query, setQuery] = useState("");
 	const [terminalText, setTerminalText] = useState(() => loginBanner);
+	// Ephemeral status line shown beneath the committed log (the busy-retry
+	// countdown). Kept out of terminalText so it rewrites/clears in place without
+	// editing history.
+	const [transient, setTransient] = useState("");
+	// Coarse status announced to assistive tech on transitions only (busy-retry),
+	// kept separate from `transient` so the per-second countdown isn't read aloud.
+	const [announce, setAnnounce] = useState("");
 	const [running, setRunning] = useState<CommandKind | null>(null);
 	// Bumped whenever a new command is issued, so the terminal re-pins to the
 	// bottom and resumes auto-follow even if the user had scrolled into history.
@@ -121,7 +207,6 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 	const [health, setHealth] = useState<"checking" | "ok" | "fail">("checking");
 
 	const abortRef = useRef<AbortController | null>(null);
-	const sourceRef = useRef<EventSource | null>(null);
 	const probeRunning = running === "ping" || running === "traceroute";
 	const detection = detectQuery(query, config.routingBackend);
 	const bgpEnabled =
@@ -148,24 +233,73 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 
 	const finish = useCallback(() => {
 		abortRef.current = null;
-		sourceRef.current?.close();
-		sourceRef.current = null;
+		setTransient("");
 		setRunning(null);
 	}, []);
 
 	const cancel = useCallback(() => {
 		abortRef.current?.abort();
 		abortRef.current = null;
-		sourceRef.current?.close();
-		sourceRef.current = null;
+		setTransient("");
+		setAnnounce("");
 		append("^C\n");
 		setRunning(null);
 	}, [append]);
 
+	// Run an attempt; if the backend signals busy (HAProxy maxconn / CF rate
+	// limit → 503/429), show a TUI-style countdown and retry. `attempt` returns
+	// "busy" to request a retry, or "done" once it has produced output (a
+	// success or a non-busy error). Delays come from BUSY_RETRY_DELAYS_MS.
+	const withBusyRetry = useCallback(
+		async (
+			controller: AbortController,
+			attempt: () => Promise<"busy" | "done">,
+		) => {
+			const total = BUSY_RETRY_DELAYS_MS.length;
+			for (let i = 0; ; i++) {
+				if ((await attempt()) === "done") return;
+				if (i >= total) {
+					setTransient("");
+					setAnnounce(
+						"Backend busy — all query slots are in use. Please try again shortly.",
+					);
+					append(
+						"! backend busy — all query slots are in use. Please try again shortly.\n",
+					);
+					return;
+				}
+				const attemptNo = i + 1;
+				// ±20% jitter so a burst of clients that all hit the gate at the same
+				// instant don't retry in lockstep and re-collide (thundering herd).
+				const delay = Math.round(
+					BUSY_RETRY_DELAYS_MS[i] * (0.8 + Math.random() * 0.4),
+				);
+				const seconds = Math.ceil(delay / 1000);
+				// Announce once per attempt (not per tick), so screen readers get the
+				// retry state without a second-by-second countdown read aloud.
+				setAnnounce(
+					`Backend busy. Retrying in ${seconds} seconds (attempt ${attemptNo} of ${total}).`,
+				);
+				try {
+					await waitWithCountdown(
+						delay,
+						controller.signal,
+						(secondsLeft) =>
+							setTransient(
+								`  backend busy — retrying in ${secondsLeft}s… (attempt ${attemptNo} of ${total})`,
+							),
+					);
+				} finally {
+					setTransient("");
+				}
+			}
+		},
+		[append],
+	);
+
 	useEffect(
 		() => () => {
 			abortRef.current?.abort();
-			sourceRef.current?.close();
 		},
 		[],
 	);
@@ -297,27 +431,32 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 		const controller = new AbortController();
 		abortRef.current = controller;
 		setRunning("bgp");
+		setAnnounce("");
 		appendCommand(label);
 
 		try {
-			const res = await fetch("/api/bgp", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					type: detection.bgpType,
-					family: activeFamily,
-					query: detection.commandQuery,
-					vantage,
-				}),
-				signal: controller.signal,
+			await withBusyRetry(controller, async () => {
+				const res = await fetch("/api/bgp", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						type: detection.bgpType,
+						family: activeFamily,
+						query: detection.commandQuery,
+						vantage,
+					}),
+					signal: controller.signal,
+				});
+				if (BUSY_STATUSES.has(res.status)) return "busy";
+				if (!res.ok) {
+					const msg = await res.text().catch(() => res.statusText);
+					append(`! lookup failed (${res.status}) ${msg}\n`);
+					return "done";
+				}
+				const result = (await res.json()) as { command: string; output: string };
+				append(`${result.command}\n${ensureTrailingNewline(result.output)}`);
+				return "done";
 			});
-			if (!res.ok) {
-				const msg = await res.text().catch(() => res.statusText);
-				append(`! lookup failed (${res.status}) ${msg}\n`);
-				return;
-			}
-			const result = (await res.json()) as { command: string; output: string };
-			append(`${result.command}\n${ensureTrailingNewline(result.output)}`);
 		} catch (error) {
 			if ((error as Error).name !== "AbortError") {
 				append("! lookup failed\n");
@@ -327,7 +466,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 		}
 	}
 
-	function runProbe(kind: Exclude<CommandKind, "bgp">) {
+	async function runProbe(kind: Exclude<CommandKind, "bgp">) {
 		if (running === kind) {
 			cancel();
 			return;
@@ -340,23 +479,37 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 			family: activeFamily,
 		});
 		const label = `${commandPrefix}${kind}${familyFlag(activeFamily)} ${query.trim()}`;
-		const es = new EventSource(`/api/${kind}?${params}`);
-
-		sourceRef.current = es;
+		const controller = new AbortController();
+		abortRef.current = controller;
 		setRunning(kind);
+		setAnnounce("");
 		appendCommand(label);
 
-		es.addEventListener("line", (e) => {
-			append(`${(e as MessageEvent).data}\n`);
-		});
-		es.addEventListener("fail", (e) => {
-			append(`! ${(e as MessageEvent).data}\n`);
-		});
-		es.addEventListener("done", finish);
-		es.onerror = () => {
-			append("! stream closed or rate limited\n");
-			finish();
-		};
+		try {
+			await withBusyRetry(controller, async () => {
+				const res = await fetch(`/api/${kind}?${params}`, {
+					headers: { Accept: "text/event-stream" },
+					signal: controller.signal,
+				});
+				if (BUSY_STATUSES.has(res.status)) return "busy";
+				if (!res.ok || !res.body) {
+					const msg = await res.text().catch(() => res.statusText);
+					append(`! ${kind} failed (${res.status}) ${msg || "stream error"}\n`);
+					return "done";
+				}
+				await consumeEventStream(res.body, {
+					onLine: (data) => append(`${data}\n`),
+					onFail: (data) => append(`! ${data}\n`),
+				});
+				return "done";
+			});
+		} catch (error) {
+			if ((error as Error).name !== "AbortError") {
+				append(`! ${kind} stream closed\n`);
+			}
+		} finally {
+			if (abortRef.current === controller) finish();
+		}
 	}
 
 	const clearTerminal = () => {
@@ -376,6 +529,8 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 				<TerminalOutput
 					command="ready"
 					text={terminalText}
+					transient={transient}
+					status={announce}
 					health={health}
 					busy={running !== null}
 					onInterrupt={probeRunning ? cancel : undefined}
@@ -569,7 +724,7 @@ function CommandPanel({
 						id="q"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
-						placeholder={queryPlaceholder(config.routingBackend)}
+						placeholder={queryPlaceholder(config.routingBackend, config.addressFamilies)}
 						autoComplete="off"
 						spellCheck={false}
 						aria-describedby={query.trim() ? "q-help q-detection" : "q-help"}
@@ -740,6 +895,7 @@ function FooterBar({ config }: { config: PublicConfig }) {
 }
 
 function buildLoginBanner(config: PublicConfig): string {
+	const { prefix, addr } = exampleTargets(config.addressFamilies);
 	const lines = [
 		" _      ____",
 		"| |    / ___|",
@@ -755,7 +911,7 @@ function buildLoginBanner(config: PublicConfig): string {
 		`system: ${config.title}`,
 		"",
 		"Public read-only console.",
-		"Try: 192.0.2.0/24, 203.0.113.1",
+		`Try: ${prefix}, ${addr}`,
 		`     host.example.com, AS64500, ${asPathExample(config.routingBackend)}, 64500:100`,
 		"",
 	];
@@ -763,8 +919,24 @@ function buildLoginBanner(config: PublicConfig): string {
 	return lines.join("\n");
 }
 
-function queryPlaceholder(backend: RoutingBackend): string {
-	return `192.0.2.0/24, 203.0.113.1, host.example.com, ${asPathExample(backend)}, 64500:100`;
+function queryPlaceholder(
+	backend: RoutingBackend,
+	families: AddressFamily[],
+): string {
+	const { prefix, addr } = exampleTargets(families);
+	return `${prefix}, ${addr}, host.example.com, ${asPathExample(backend)}, 64500:100`;
+}
+
+// Concrete prefix/address examples matching the configured families, so an
+// IPv6-only (or IPv4-only) deployment doesn't advertise examples in a family it
+// can't query. Both ranges are documentation-only (RFC 5737 / RFC 3849).
+function exampleTargets(families: AddressFamily[]): { prefix: string; addr: string } {
+	const v4 = families.includes("ipv4");
+	const v6 = families.includes("ipv6");
+	return {
+		prefix: v4 ? "192.0.2.0/24" : "2001:db8::/32",
+		addr: v6 ? "2001:db8::1" : "203.0.113.1",
+	};
 }
 
 function asPathExample(backend: RoutingBackend): string {
