@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 
 import { queryBGP } from "~/lib/api.server";
 import { getEnv, resolveVantage } from "~/lib/env.server";
+import { acquireOr429 } from "~/lib/gate.server";
 
 // Resource route: the browser posts BGP lookups here so the main page can keep
 // one terminal history and one command lifecycle. The wrapper remains the
@@ -21,6 +22,9 @@ export async function action({ request, context }: ActionFunctionArgs) {
 		return Response.json({ error: "unknown vantage" }, { status: 400 });
 	}
 
+	const slot = await acquireOr429(context.gate, request.signal);
+	if (slot instanceof Response) return slot;
+
 	try {
 		const result = await queryBGP(
 			env,
@@ -37,5 +41,7 @@ export async function action({ request, context }: ActionFunctionArgs) {
 	} catch (error) {
 		if (error instanceof Response) return error;
 		return Response.json({ error: "upstream error" }, { status: 502 });
+	} finally {
+		slot.release();
 	}
 }

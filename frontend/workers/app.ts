@@ -1,6 +1,9 @@
 import { createRequestHandler } from "react-router";
 
 import type { LookingGlassEnv } from "~/lib/env.server";
+import { durableObjectGate } from "~/lib/gate.server";
+
+export { CommandGate } from "./command-gate";
 
 // Build-time constant injected by Vite (`define` in vite.config.ts). Namespaces
 // the HTML edge cache per deploy so a cached shell never references stale assets.
@@ -30,6 +33,7 @@ async function handleRequest(
 
 	const context = {
 		env: env as unknown as LookingGlassEnv,
+		gate: durableObjectGate(env as unknown as LookingGlassEnv, ctx.waitUntil.bind(ctx)),
 		waitUntil: ctx.waitUntil.bind(ctx),
 	};
 

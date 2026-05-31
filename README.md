@@ -138,7 +138,9 @@ loopback behind the mandatory local HAProxy concurrency gate, and run
 | Ubuntu host with BIRD2 | `LG_ROUTING_BACKEND=bird`, `birdc -r` | [`docs/router-ubuntu-bird2.md`](docs/router-ubuntu-bird2.md) |
 
 Both guides cover wrapper installation, service persistence, loopback firewall
-rules, the HAProxy `maxconn` gate, and `cloudflared` placement. The full wrapper
+rules, the HAProxy `maxconn` gate, and `cloudflared` placement. The Worker also
+has an optional edge-side global command gate that rejects excess commands before
+they traverse the tunnel; HAProxy remains the box-side hard cap. The full wrapper
 config surface is in
 [`wrapper/.env.example`](wrapper/.env.example). If you use the BIRD backend, set
 `LG_ROUTING_BACKEND=bird` on the Worker too so the UI shows BIRD path-mask
@@ -217,6 +219,12 @@ scripts/deploy.sh --dry-run  # validate without uploading
 vars/routes into the deployed config; without it, the committed placeholder
 `wrangler.json` is used. `wrangler.prod.jsonc` is gitignored — it's where your
 real values live.
+
+The edge-side command gate does not need a separate Durable Object activation
+step. The deploy config contains the `COMMAND_GATE` binding; `wrangler deploy`
+registers the Durable Object class with the Worker version. The single global
+object instance is created lazily the first time a command route asks for
+`idFromName("global")`.
 
 **Option B — GitHub Actions (opt-in template).** A ready-to-use deploy workflow
 ships as a **template that is intentionally not wired**:
@@ -338,11 +346,17 @@ threat model**. The design holds to:
    `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` are missing in production,
    fix the Worker secrets or Access policy; do **not** make the wrapper-origin
    hostname public to compensate.
-7. **HAProxy maxconn is the hard cap.** Every production vantage runs local
+7. **Global edge gate fronts HAProxy.** The frontend command routes acquire a
+   global slot before calling the wrapper. Cloudflare Workers use a single
+   Durable Object (`COMMAND_GATE`); Node/Express can use Redis when
+   `LG_REDIS_URL` is set. The gate returns `429` when all slots are busy,
+   expires leaked slots with `LG_GATE_TTL_SEC` (default `30`), and fails open if
+   its backend is unhealthy. `LG_MAX_CONCURRENT` defaults to `4`.
+8. **HAProxy maxconn is the hard cap.** Every production vantage runs local
    HAProxy on loopback in front of the wrapper. The HAProxy backend `maxconn` is
    the real DoS bound for concurrent origin pressure; the wrapper intentionally
    does not implement its own global concurrency policy.
-8. **Cloudflare rate limiting is a courtesy throttle.** The Free-plan rule in
+9. **Cloudflare rate limiting is a courtesy throttle.** The Free-plan rule in
    [`docs/cloudflare-hardening.md`](docs/cloudflare-hardening.md) can reduce
    obvious bursts before they reach the tunnel, but it is per Cloudflare colo and
    source IP, not a global cap.

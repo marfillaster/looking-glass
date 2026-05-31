@@ -1,4 +1,8 @@
 import type { AppLoadContext } from "react-router";
+import type {
+	CommandGate,
+	DurableObjectNamespaceLike,
+} from "./gate.server";
 
 // Runtime-neutral load context. Each runtime adapter (the Cloudflare Worker in
 // workers/app.ts, the Node/Express server in server/index.js) builds this shape
@@ -8,6 +12,7 @@ import type { AppLoadContext } from "react-router";
 declare module "react-router" {
 	interface AppLoadContext {
 		env: LookingGlassEnv;
+		gate?: CommandGate;
 		waitUntil?: (promise: Promise<unknown>) => void;
 	}
 }
@@ -33,6 +38,17 @@ export interface LookingGlassEnv {
 	// Dev/staging escape hatch: allow a non-loopback wrapper origin without
 	// Cloudflare Access headers. Never set in production.
 	LG_UNSAFE_NON_LOOPBACK?: string;
+	// Global command concurrency gate. Defaults mirror the HAProxy box-side gate:
+	// four live commands and 30s slot TTL.
+	LG_MAX_CONCURRENT?: string;
+	LG_GATE_TTL_SEC?: string;
+	LG_GATE_TIMEOUT_MS?: string;
+	// Node-only Redis gate URL. Workers ignore this; Node uses a no-op gate when
+	// unset so local/plain Node deploys keep working without Redis.
+	LG_REDIS_URL?: string;
+	// Worker-only Durable Object binding. It is deliberately structural so this
+	// runtime-neutral module does not need to import Worker-specific code.
+	COMMAND_GATE?: DurableObjectNamespaceLike;
 
 	// Public UI copy — all placeholders in the repo, set per deploy.
 	LG_SITE_TITLE?: string;

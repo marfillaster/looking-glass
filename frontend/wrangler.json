@@ -20,6 +20,16 @@
     "LG_SITE_URL": "https://lg.example.com",
     "LG_ENABLED_QUERIES": "prefix,as-path,community",
     "LG_ROUTING_BACKEND": "frr",
-    "LG_ADDRESS_FAMILIES": "ipv4,ipv6"
-  }
+    "LG_ADDRESS_FAMILIES": "ipv4,ipv6",
+    "LG_MAX_CONCURRENT": "4",
+    "LG_GATE_TTL_SEC": "30"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "COMMAND_GATE", "class_name": "CommandGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["CommandGate"] }
+  ]
 }

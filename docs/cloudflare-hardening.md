@@ -2,7 +2,9 @@
 
 This project relies on Cloudflare for the public edge and keeps the vantage-side
 wrapper private behind Cloudflare Tunnel + Access. The mandatory local HAProxy
-gate is the hard concurrency cap; Cloudflare can add a useful outer guard:
+gate is the box-side hard concurrency cap. The frontend can also add a global
+Worker/Redis command gate that rejects excess commands before they traverse the
+tunnel; Cloudflare rules remain a useful outer guard:
 
 - challenge human page loads on the public frontend hostname;
 - rate-limit command traffic on the backend API hostname as a courtesy throttle;
@@ -28,7 +30,21 @@ Before adding these rules, deploy the normal security path:
 
 The hardening rules below are additive. They are not a replacement for Access or
 the wrapper's loopback-only boundary, and they are not a replacement for the
-local HAProxy `maxconn` cap.
+frontend command gate or local HAProxy `maxconn` cap.
+
+## Durable Object Command Gate
+
+On Cloudflare Workers, the frontend command gate is a Durable Object binding
+named `COMMAND_GATE`. No manual Cloudflare dashboard activation is required:
+the Worker config declares the binding, and `wrangler deploy` registers the
+class as part of the Worker version.
+
+The object instance is lazy. The first `/api/bgp`, `/api/ping`, or
+`/api/traceroute` request that acquires a gate slot resolves
+`idFromName("global")`; Cloudflare creates that global object instance if it
+does not already exist. The app stores only in-memory slot state in the object,
+so Durable Object eviction resets the gate to empty and degrades in the
+fail-open direction. HAProxy remains the box-side hard cap.
 
 ## Frontend HTML Challenge
 

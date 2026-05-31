@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { createRequestHandler } from "@react-router/express";
 import compression from "compression";
 import express from "express";
+import { makeRedisGate } from "./redis-gate.js";
 
 // Resolve build paths relative to this file, not process.cwd(), so the server
 // runs the same from anywhere. server/index.js lives one level below the
@@ -36,6 +37,7 @@ try {
 // The server build is an output artifact (gitignored build/), so it can't be
 // statically imported at lint time; load it dynamically at boot.
 const build = await import(serverBuildUrl.href);
+const gate = makeRedisGate(process.env);
 
 const app = express();
 
@@ -74,7 +76,7 @@ app.all(
 	"*",
 	createRequestHandler({
 		build,
-		getLoadContext: () => ({ env: process.env }),
+		getLoadContext: () => ({ env: process.env, gate }),
 	}),
 );
 

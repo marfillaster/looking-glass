@@ -16,6 +16,12 @@ CF_ACCESS_CLIENT_SECRET=
 # LG_API_BASE_URL=http://127.0.0.1:8080
 # LG_ROUTING_BACKEND=frr
 
+# Global command concurrency gate. Workers use the COMMAND_GATE Durable Object
+# binding from wrangler.json; Node uses Redis only when LG_REDIS_URL is set.
+# LG_MAX_CONCURRENT=4
+# LG_GATE_TTL_SEC=30
+# LG_REDIS_URL=redis://localhost:6379
+
 # Dev/staging escape hatch for a non-loopback wrapper reached over a trusted
 # overlay without Cloudflare Access. Set the same variable on the wrapper side.
 # Never set in production.
