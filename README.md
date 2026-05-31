@@ -101,12 +101,14 @@ LG_LISTEN_ADDR=[fd00:dev::2]:8080    # example: a WireGuard ULA you control
 LG_UNSAFE_NON_LOOPBACK=1 LG_LISTEN_ADDR=[fd00:dev::2]:8080 ./wrapper
 ```
 
-Then point the frontend straight at it (no CF Access headers are sent when the
-service-token vars are unset — the wrapper has no client auth):
+Then point the frontend straight at it and set the same unsafe override so the
+frontend runtime is allowed to call a non-loopback origin without CF Access
+headers. The wrapper still has no client auth:
 
 ```sh
 # in frontend/.dev.vars
 LG_API_BASE_URL=http://[fd00:dev::2]:8080
+LG_UNSAFE_NON_LOOPBACK=1
 
 cd frontend && npm run dev      # or: npm run build:node && npm run start:node
 ```
@@ -126,7 +128,8 @@ Worker** (locally or via the CI template).
 ### 1. Vantage side — wrapper + cloudflared
 
 Install the wrapper on the box that has the local BGP RIB, keep it bound to
-loopback, and run `cloudflared` on that same host so the tunnel forwards to
+loopback behind the mandatory local HAProxy concurrency gate, and run
+`cloudflared` on that same host so the tunnel forwards to HAProxy at
 `http://127.0.0.1:8080`. Pick the guide that matches your routing daemon:
 
 | Platform | BGP backend | Setup guide |
@@ -135,7 +138,8 @@ loopback, and run `cloudflared` on that same host so the tunnel forwards to
 | Ubuntu host with BIRD2 | `LG_ROUTING_BACKEND=bird`, `birdc -r` | [`docs/router-ubuntu-bird2.md`](docs/router-ubuntu-bird2.md) |
 
 Both guides cover wrapper installation, service persistence, loopback firewall
-rules, and `cloudflared` placement. The full wrapper config surface is in
+rules, the HAProxy `maxconn` gate, and `cloudflared` placement. The full wrapper
+config surface is in
 [`wrapper/.env.example`](wrapper/.env.example). If you use the BIRD backend, set
 `LG_ROUTING_BACKEND=bird` on the Worker too so the UI shows BIRD path-mask
 syntax instead of FRR AS-path regex examples.
@@ -171,8 +175,9 @@ host your looking glass:
    > This is intentional: the wrapper stays dumb and unauthenticated; Cloudflare
    > Access is the authentication boundary.
 4. **Add edge hardening rules** for public traffic: challenge only the frontend
-   HTML shell, and rate-limit the backend command API so excess bursts return
-   `429` instead of starting more vantage-side probes. See
+   HTML shell, and rate-limit the backend command API as a courtesy throttle so
+   obvious bursts usually return `429` before reaching the tunnel. This is not
+   DoS protection; HAProxy `maxconn` is the hard cap. See
    [`docs/cloudflare-hardening.md`](docs/cloudflare-hardening.md) for the exact
    Cloudflare rules, Free-plan constraints, and Rulesets API examples.
 5. **API token for deploying** (Account → API Tokens). Scope it tightly:
@@ -333,13 +338,14 @@ threat model**. The design holds to:
    `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` are missing in production,
    fix the Worker secrets or Access policy; do **not** make the wrapper-origin
    hostname public to compensate.
-7. **Edge rate limiting is the safety valve.** Cloudflare can
-   rate-limit command requests before they reach the tunnel, and this repo
-   documents a Free-plan-compatible rule in
-   [`docs/cloudflare-hardening.md`](docs/cloudflare-hardening.md). The wrapper
-   intentionally does not implement concurrency or rate-limit policy; keep that
-   control at the edge or in a local loopback proxy if you need stricter process
-   caps.
+7. **HAProxy maxconn is the hard cap.** Every production vantage runs local
+   HAProxy on loopback in front of the wrapper. The HAProxy backend `maxconn` is
+   the real DoS bound for concurrent origin pressure; the wrapper intentionally
+   does not implement its own global concurrency policy.
+8. **Cloudflare rate limiting is a courtesy throttle.** The Free-plan rule in
+   [`docs/cloudflare-hardening.md`](docs/cloudflare-hardening.md) can reduce
+   obvious bursts before they reach the tunnel, but it is per Cloudflare colo and
+   source IP, not a global cap.
 
 Long-running probes never block SSR: the page loader handles only the page and
 fast BGP queries, while `ping`/`traceroute` stream to the browser as Server-Sent

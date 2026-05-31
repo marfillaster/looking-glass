@@ -30,6 +30,9 @@ export interface LookingGlassEnv {
 	// tunnel. Public users never see these.
 	CF_ACCESS_CLIENT_ID?: string;
 	CF_ACCESS_CLIENT_SECRET?: string;
+	// Dev/staging escape hatch: allow a non-loopback wrapper origin without
+	// Cloudflare Access headers. Never set in production.
+	LG_UNSAFE_NON_LOOPBACK?: string;
 
 	// Public UI copy — all placeholders in the repo, set per deploy.
 	LG_SITE_TITLE?: string;

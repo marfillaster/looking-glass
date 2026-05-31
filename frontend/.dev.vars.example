@@ -15,3 +15,8 @@ CF_ACCESS_CLIENT_SECRET=
 # Access headers above:
 # LG_API_BASE_URL=http://127.0.0.1:8080
 # LG_ROUTING_BACKEND=frr
+
+# Dev/staging escape hatch for a non-loopback wrapper reached over a trusted
+# overlay without Cloudflare Access. Set the same variable on the wrapper side.
+# Never set in production.
+# LG_UNSAFE_NON_LOOPBACK=1

@@ -30,7 +30,7 @@ important runtime property is `User=lg` plus supplementary group `frrvty`.
 Create `/config/looking-glass/wrapper.env`:
 
 ```sh
-LG_LISTEN_ADDR=127.0.0.1:8080
+LG_LISTEN_ADDR=127.0.0.1:8081
 LG_ROUTING_BACKEND=frr
 LG_VTYSH_PATH=/usr/bin/vtysh
 LG_PING_PATH=/usr/bin/ping
@@ -55,6 +55,8 @@ Append this to `/config/scripts/vyos-postconfig-bootup.script`:
 if ! systemctl is-active --quiet lg-wrapper.service; then
     systemd-run --unit=lg-wrapper --collect \
         -p User=lg -p SupplementaryGroups=frrvty \
+        -p NoNewPrivileges=true -p ProtectSystem=strict \
+        -p ProtectHome=true -p PrivateTmp=true \
         -p Restart=always -p RestartSec=2 \
         -p EnvironmentFile=/config/looking-glass/wrapper.env \
         /config/looking-glass/wrapper
@@ -85,18 +87,19 @@ set firewall ipv6 input filter rule 5 inbound-interface name lo
 
 Commit and save as usual for your VyOS configuration workflow.
 
-## Optional: HAProxy Local Concurrency Gate
+## HAProxy Local Concurrency Gate
 
-Cloudflare rate limiting reduces bursts at the edge, but it does not know local
-origin pressure. If you want a local cap while keeping the wrapper dumb, put
-HAProxy on loopback in front of the wrapper. This caps concurrent origin
-connections/request pressure; it is not a direct subprocess-lifetime controller.
+Deploy HAProxy on loopback in front of the wrapper. This is the mandatory local
+concurrency gate and the only true global cap for this vantage point. Cloudflare
+rate limiting is only a courtesy throttle; HAProxy `maxconn` is the hard DoS
+bound for concurrent origin pressure. It is not a direct subprocess-lifetime
+controller.
 
 ```text
 cloudflared -> 127.0.0.1:8080 (HAProxy) -> 127.0.0.1:8081 (wrapper)
 ```
 
-Move the wrapper to `8081`:
+The wrapper environment above already binds the wrapper to `8081`:
 
 ```sh
 LG_LISTEN_ADDR=127.0.0.1:8081
@@ -167,8 +170,8 @@ ingress:
 ```
 
 On VyOS, run `cloudflared` as a podman container via `set container` with host
-networking so `127.0.0.1:8080` resolves to the router's loopback service
-(wrapper directly, or HAProxy if you enabled the optional gate):
+networking so `127.0.0.1:8080` resolves to the router's loopback HAProxy
+service:
 
 ```text
 set container name cloudflared allow-host-networks

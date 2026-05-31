@@ -57,7 +57,7 @@ Create `/etc/looking-glass/wrapper.env`:
 ```sh
 sudo install -d -m 0755 /etc/looking-glass
 sudo tee /etc/looking-glass/wrapper.env >/dev/null <<'EOF'
-LG_LISTEN_ADDR=127.0.0.1:8080
+LG_LISTEN_ADDR=127.0.0.1:8081
 LG_ROUTING_BACKEND=bird
 LG_BIRDC_PATH=/usr/sbin/birdc
 LG_PING_PATH=/usr/bin/ping
@@ -144,12 +144,13 @@ iif "lo" accept
 
 Do not expose the wrapper port on a public or LAN interface.
 
-## Optional: HAProxy Local Concurrency Gate
+## HAProxy Local Concurrency Gate
 
-Cloudflare rate limiting reduces bursts at the edge, but it does not know local
-origin pressure. If you want a local cap while keeping the wrapper dumb, put
-HAProxy on loopback in front of the wrapper. This caps concurrent origin
-connections/request pressure; it is not a direct subprocess-lifetime controller.
+Deploy HAProxy on loopback in front of the wrapper. This is the mandatory local
+concurrency gate and the only true global cap for this vantage point. Cloudflare
+rate limiting is only a courtesy throttle; HAProxy `maxconn` is the hard DoS
+bound for concurrent origin pressure. It is not a direct subprocess-lifetime
+controller.
 
 ```text
 cloudflared -> 127.0.0.1:8080 (HAProxy) -> 127.0.0.1:8081 (wrapper)
@@ -162,7 +163,7 @@ sudo apt-get update
 sudo apt-get install -y haproxy
 ```
 
-Move the wrapper to `8081` in `/etc/looking-glass/wrapper.env`:
+The wrapper environment above already binds the wrapper to `8081`:
 
 ```sh
 LG_LISTEN_ADDR=127.0.0.1:8081

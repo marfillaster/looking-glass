@@ -15,7 +15,7 @@ export async function loader({ request, context }: LoaderFunctionArgs) {
 	}
 
 	const upstream = await fetch(new URL("/healthz", vantage.baseUrl), {
-		headers: authHeaders(env),
+		headers: authHeaders(env, vantage.baseUrl),
 		signal: request.signal,
 	});
 

@@ -4,15 +4,41 @@ import type { LookingGlassEnv } from "./env.server";
 // Cloudflare Access service-token headers so only this Worker can reach the
 // tunnel; the public never talks to the wrapper directly.
 
-export function authHeaders(env: LookingGlassEnv): HeadersInit {
+export function authHeaders(env: LookingGlassEnv, baseUrl: string): HeadersInit {
 	// Edge auth only: the CF Access service token gets the Worker past Access to
 	// the tunnel. The wrapper itself does no client auth — it binds loopback.
 	const h: Record<string, string> = {};
 	if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
 		h["CF-Access-Client-Id"] = env.CF_ACCESS_CLIENT_ID;
 		h["CF-Access-Client-Secret"] = env.CF_ACCESS_CLIENT_SECRET;
+	} else if (!isLoopbackOrigin(baseUrl) && !envFlag(env.LG_UNSAFE_NON_LOOPBACK)) {
+		throw new Response(
+			"Cloudflare Access service token is not configured for non-loopback origin",
+			{ status: 500 },
+		);
 	}
 	return h;
+}
+
+function envFlag(value: string | undefined): boolean {
+	switch ((value ?? "").trim().toLowerCase()) {
+		case "1":
+		case "true":
+		case "yes":
+		case "on":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function isLoopbackOrigin(baseUrl: string): boolean {
+	try {
+		const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+		return host === "localhost" || host === "::1" || host.startsWith("127.");
+	} catch {
+		return false;
+	}
 }
 
 export interface BGPResult {
@@ -30,7 +56,7 @@ export async function queryBGP(
 ): Promise<BGPResult> {
 	const res = await fetch(new URL("/api/bgp", baseUrl), {
 		method: "POST",
-		headers: { ...authHeaders(env), "Content-Type": "application/json" },
+		headers: { ...authHeaders(env, baseUrl), "Content-Type": "application/json" },
 		body: JSON.stringify(body),
 		signal,
 	});
@@ -55,7 +81,7 @@ export function openProbeStream(
 	url.searchParams.set("target", params.target);
 	if (params.family) url.searchParams.set("family", params.family);
 	return fetch(url, {
-		headers: { ...authHeaders(env), Accept: "text/event-stream" },
+		headers: { ...authHeaders(env, baseUrl), Accept: "text/event-stream" },
 		signal,
 	});
 }

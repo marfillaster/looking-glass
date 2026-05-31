@@ -1,11 +1,11 @@
 # Cloudflare Hardening
 
 This project relies on Cloudflare for the public edge and keeps the vantage-side
-wrapper private behind Cloudflare Tunnel + Access. The wrapper still enforces
-its own command-safety invariants, but Cloudflare can add a useful outer guard:
+wrapper private behind Cloudflare Tunnel + Access. The mandatory local HAProxy
+gate is the hard concurrency cap; Cloudflare can add a useful outer guard:
 
 - challenge human page loads on the public frontend hostname;
-- rate-limit command traffic on the backend API hostname;
+- rate-limit command traffic on the backend API hostname as a courtesy throttle;
 - keep API failures machine-friendly (`429`) instead of challenge pages.
 
 Use placeholders below with your own hostnames:
@@ -17,15 +17,18 @@ Use placeholders below with your own hostnames:
 
 Before adding these rules, deploy the normal security path:
 
-1. The wrapper listens on `127.0.0.1:8080` only.
-2. `cloudflared` forwards `lg-api.example.com` to `http://127.0.0.1:8080`.
-3. `lg-api.example.com` is protected by a Cloudflare Access Service Auth policy.
-4. The Worker sends `CF-Access-Client-Id` and `CF-Access-Client-Secret`.
-5. Public users only browse `lg.example.com`; they do not call the wrapper API
+1. The wrapper listens on `127.0.0.1:8081` only.
+2. HAProxy listens on `127.0.0.1:8080` and forwards to the wrapper with a
+   backend `maxconn` hard cap.
+3. `cloudflared` forwards `lg-api.example.com` to `http://127.0.0.1:8080`.
+4. `lg-api.example.com` is protected by a Cloudflare Access Service Auth policy.
+5. The Worker sends `CF-Access-Client-Id` and `CF-Access-Client-Secret`.
+6. Public users only browse `lg.example.com`; they do not call the wrapper API
    hostname directly.
 
 The hardening rules below are additive. They are not a replacement for Access or
-the wrapper's loopback-only boundary.
+the wrapper's loopback-only boundary, and they are not a replacement for the
+local HAProxy `maxconn` cap.
 
 ## Frontend HTML Challenge
 
@@ -58,7 +61,7 @@ the homepage challenge rule.
 
 ## Backend API Rate Limit
 
-Rate-limit command endpoints on the backend API hostname:
+Rate-limit command endpoints on the backend API hostname as a courtesy throttle:
 
 ```text
 http.host eq "lg-api.example.com"
@@ -88,7 +91,7 @@ On Cloudflare Free, the practical rate-limit shape is constrained:
 - stable characteristics such as `http.host` or request headers require
   Advanced Rate Limiting.
 
-That means a Free-plan shared backend safety valve looks like:
+That means a Free-plan shared backend courtesy throttle looks like:
 
 ```json
 {
@@ -99,9 +102,10 @@ That means a Free-plan shared backend safety valve looks like:
 }
 ```
 
-This is not a true global concurrency cap. It is a short-window throttle keyed by
-Cloudflare data center and source IP. It still helps absorb bursts before they
-reach the router, especially because all command paths share the same rule.
+This is not DoS protection and not a true global concurrency cap. It is a
+short-window throttle keyed by Cloudflare data center and source IP. It can
+absorb some obvious bursts before they reach the router, but HAProxy `maxconn`
+remains the hard bound.
 
 ## Rulesets API Example
 
@@ -161,13 +165,13 @@ curl "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/rulesets/phases/http_r
   --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
 ```
 
-## Stronger Guarantees
+## Local Hard Cap
 
 Cloudflare rate limiting counts request rate, not live command processes. The
 wrapper intentionally stays a dumb command adapter and does not enforce global
-concurrency. If you need a hard local cap such as "only N traceroutes may run at
-once", put that policy in a loopback proxy such as HAProxy or nginx between
-`cloudflared` and the wrapper.
+concurrency. The production hard cap belongs in the local loopback HAProxy
+between `cloudflared` and the wrapper; its backend `maxconn` is the real bound
+for this vantage point.
 
 Advanced Rate Limiting can improve the edge keying model with stable
 characteristics like `http.host`, selected headers, cookies, or custom counting
