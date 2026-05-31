@@ -4,6 +4,8 @@ A self-hostable **AS looking glass**: a sleek web UI for querying one network's
 edge view — BGP RIB lookups plus live `ping` / `traceroute` — from a single
 vantage point on a router or Linux host.
 
+![Looking Glass web UI showing the terminal-style query console](docs/screenshot.png)
+
 BGP table queries are the headline feature (that's what makes it a *looking
 glass* and not just a ping page). All public traffic stays on Cloudflare's edge;
 the router only ever runs a small, allow-listed command wrapper.
