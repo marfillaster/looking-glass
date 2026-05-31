@@ -84,9 +84,9 @@ func LoadConfig() Config {
 		BGPTimeout:        envDuration("LG_BGP_TIMEOUT_SEC", 10*time.Second),
 		PingCount:         envInt("LG_PING_COUNT", 5, 1, 20),
 		PingTimeout:       envDuration("LG_PING_TIMEOUT_SEC", 15*time.Second),
-		TracerouteMaxHop:  envInt("LG_TRACEROUTE_MAX_HOPS", 20, 1, 30),
+		TracerouteMaxHop:  envInt("LG_TRACEROUTE_MAX_HOPS", 15, 1, 30),
 		TracerouteQueries: envInt("LG_TRACEROUTE_QUERIES", 2, 1, 5),
-		TracerouteTimeout: envDuration("LG_TRACEROUTE_TIMEOUT_SEC", 30*time.Second),
+		TracerouteTimeout: envDuration("LG_TRACEROUTE_TIMEOUT_SEC", 20*time.Second),
 	}
 
 	if raw := env("LG_ALLOW_QUERY_TYPES", ""); raw != "" {
