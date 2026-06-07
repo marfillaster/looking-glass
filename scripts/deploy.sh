@@ -6,7 +6,9 @@
 # workflow is shipped only as an opt-in template under deploy/github-actions/.
 #
 # Prereqs (one-time):
-#   - Docker running (used to build the gitignored ghostty-vt.wasm on macOS).
+#   - A container runtime for building the gitignored ghostty-vt.wasm on macOS:
+#     `container` (Apple, brew install container) or `docker`. The build script
+#     auto-detects; override with CONTAINER_RUNTIME=docker|container.
 #   - wrangler authenticated: run `wrangler login`, OR export
 #     CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in your shell.
 #   - Worker secrets already set once (see deploy runbook):
