@@ -1,4 +1,4 @@
-const GEOFEED_CSV = "2a14:7583:eff9::/48,PH,PH-CAV,Cavite City,4100\n";
+const GEOFEED_CSV = "2a14:7583:eff9::/48,PH,PH-CAV,General Trias City,4107\n";
 
 export function loader() {
 	return new Response(GEOFEED_CSV, {
